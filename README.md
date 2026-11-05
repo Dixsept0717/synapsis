@@ -1,0 +1,79 @@
+# Synapsis · 析域
+
+一个给 [DeepSeek Harness](https://github.com/deepseek-ai) Web UI 用的**概念地图**插件。
+
+不是把思维导图搬进聊天窗口，而是给知识一张可以走进去的地图：滚轮往前推，子分支就长成新的主分支；
+缩回去，它又退回原来那一层。每个概念是一张卡片，带着定义、形式化（LaTeX）、直觉、例子、易错点，
+以及它需要的前置概念和它引出的概念。
+
+## 它长什么样
+
+侧栏点「析域」→ 整页面板打开一张图：
+
+- **滚动即进入**：以光标为锚缩放，每层钉在可读字号上，再往前推就走进最近的子分支（它成为新的主图根），
+  缩小到一半退回上一层。不会开新窗口，也不会糊成一团像素。
+- **每层都是同一张图**：布局按当前焦点重排成完整圆周，所以任何子分支展开后都像一张独立的导图。
+- **卡片分层**：焦点是全卡（标题＋摘要＋定义），子级是标题＋摘要，再远只留标题，更远收成一个点。
+- **侧栏概念卡**：定义 / 形式化 / 直觉 / 例子 / 易错点 / 原文出处 / 前置 / 引出 / 掌握度 / 个人笔记。
+- **关系边**：从属是实线，前置是琥珀虚线，关联是青绿点线，对比是玫红双线。
+- **面包屑 + 小地图**：知道自己在哪儿，也知道整张图有多大。
+- **两套纸**：浅色是米黄纸，暗色是「夜间纸」，都带纸纹。
+
+## 安装
+
+这个目录就是一个插件包（`package.json` 里带 `dsh.bundle.patch`），装进 DSH profile 即可：
+
+```
+plugin_manager: install_bundle, target = <这个目录的绝对路径>
+```
+
+装完重启或刷新宿主页面，侧栏会出现「析域」图标。
+
+## 数据放哪
+
+默认读 `E:\dsh工作空间\析域`（Windows 路径），可用环境变量 `SYNAPSIS_DATA` 覆盖。
+目录里每一份图是一个 `*.mindmap.json`：
+
+```json
+{
+  "version": 1,
+  "title": "离散数学（第六版）",
+  "nodes": [
+    { "id": "ch3", "title": "集合", "parent": "root", "summary": "…",
+      "definition": "…", "formal": "B \\subseteq A \\iff \\forall x(x \\in B \\to x \\in A)",
+      "intuition": "…", "examples": "…", "pitfalls": "…",
+      "source": { "page": 71, "snippet": "原文摘句" },
+      "mastery": 0, "note": "" }
+  ],
+  "edges": [ { "from": "ch3-set", "to": "ch3-subset", "type": "prereq" } ]
+}
+```
+
+`parent` 是分类归属（树），`edges` 是跨分支的关系（网）；`type` 可以是 `prereq` / `related` / `contrast`。
+反链不存，打开时现算。布局也不持久化——它由焦点和节点数算出来。
+
+## 公式
+
+插件自带 KaTeX（`assets/katex/`，含字体），由 Host 半边的 `/synapsis-api/katex/*` 路由提供，
+不依赖网络，也不依赖宿主提供任何包。`$$…$$`、`$…$`、`\(…\)`、`\[…\]` 都认；
+`formal` 字段如果整段没有定界符，也按公式渲染。
+
+## 目录
+
+```
+index.js            Host 半边：图库读写路由（/synapsis-api/list|load|save）+ KaTeX 静态资源
+client-body.js      面板组件源码（图库切换、保存防抖、KaTeX 就绪等待）
+client.js           构建产物：内核 + client-body 拼成的客户端包，安装时用的就是它
+assets/katex/       自带的 KaTeX js/css/字体
+locale/{zh,en}.json 插件元信息
+cordis.patch.yml    装进 DSH 的 patch 片段
+```
+
+`client.js` 是生成文件（渲染内核 `core/synapsis-core.js` + `client-body.js` 拼接而来），
+随仓库一起发布是为了让插件能独立安装；改面板逻辑请改 `client-body.js`，再重新构建。
+
+## 已知边界
+
+- 面板占据宿主主面板，和聊天视图互斥，只能来回切。
+- 关系边默认只显示从属边，跨分支边在焦点附近才浮现——否则几百个节点会缠成毛线。
+- 交互目前是阅读向的：选中、推近、缩回、标掌握度、记笔记。改名/增删节点还在路上。

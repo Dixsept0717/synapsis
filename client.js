@@ -1,0 +1,1356 @@
+/* Synapsis · 析域 —— DSH 插件客户端（由 tools/build-plugin.mjs 生成，勿手改） */
+window.__ModuleLoader__.load({
+  id: 'synapsis',
+  factory(require) {
+    const React = require('react')
+    const h = React.createElement
+
+/* Synapsis · 析域 —— 概念图内核
+ * 一个工厂：createMindMap(React) -> { MindMap, buildLayout }
+ * 无模块语法，可作为普通脚本加载，也可被插件拼接进 __ModuleLoader__ 工厂。
+ */
+function createMindMap(React) {
+  var h = React.createElement
+  var useState = React.useState
+  var useEffect = React.useEffect
+  var useRef = React.useRef
+  var useMemo = React.useMemo
+  var useCallback = React.useCallback
+
+  /* ---------------------------------------------------------------- */
+  /* geometry                                                          */
+  /* ---------------------------------------------------------------- */
+
+  var S = 1.6
+  var INV = 1 / S
+  var RING = 300
+  var W0 = 196
+  var H0 = 82
+
+  function clamp(v, lo, hi) {
+    return v < lo ? lo : v > hi ? hi : v
+  }
+
+  function buildLayout(nodes, rootId) {
+    var byId = new Map()
+    var i
+    for (i = 0; i < nodes.length; i++) {
+      var raw = nodes[i]
+      byId.set(raw.id, {
+        id: raw.id,
+        title: raw.title || '未命名',
+        en: raw.en || '',
+        summary: raw.summary || '',
+        parent: raw.parent || null,
+        children: [],
+        depth: 0,
+        weight: 1,
+        x: 0,
+        y: 0,
+        w: W0,
+        h: H0,
+      })
+    }
+    var root = null
+    var forced = rootId ? byId.get(rootId) : null
+    for (i = 0; i < nodes.length; i++) {
+      var item = nodes[i]
+      var node = byId.get(item.id)
+      var parent = item.parent ? byId.get(item.parent) : null
+      if (parent && parent !== node) parent.children.push(node)
+      else if (!root) root = node
+    }
+    if (forced) root = forced
+    if (!root) return null
+
+    var order = []
+    var walk = function (n, depth) {
+      n.depth = depth
+      order.push(n)
+      for (var k = 0; k < n.children.length; k++) walk(n.children[k], depth + 1)
+    }
+    walk(root, 0)
+
+    for (i = order.length - 1; i >= 0; i--) {
+      var cur = order[i]
+      if (cur.children.length === 0) {
+        cur.weight = 1
+      } else {
+        var sum = 0
+        for (var c = 0; c < cur.children.length; c++) sum += cur.children[c].weight
+        cur.weight = sum
+      }
+    }
+
+    var counts = []
+    for (i = 0; i < order.length; i++) {
+      var d = order[i].depth
+      counts[d] = (counts[d] || 0) + 1
+    }
+
+    var radius = []
+    for (i = 0; i < counts.length; i++) {
+      var w = W0 * Math.pow(INV, i)
+      var geometric = i === 0 ? 0 : radius[i - 1] + RING * Math.pow(INV, i - 1)
+      var needed = counts[i] ? (counts[i] * w * 1.18) / (2 * Math.PI) : 0
+      radius[i] = Math.max(geometric, needed)
+    }
+
+    root.x = 0
+    root.y = 0
+    var place = function (n, a0, a1) {
+      var total = n.weight || 1
+      var cursor = a0
+      for (var k = 0; k < n.children.length; k++) {
+        var child = n.children[k]
+        var span = (a1 - a0) * ((child.weight || 1) / total)
+        var mid = cursor + span / 2
+        var r = radius[child.depth] || 0
+        child.x = Math.cos(mid) * r
+        child.y = Math.sin(mid) * r
+        place(child, cursor, cursor + span)
+        cursor += span
+      }
+    }
+    place(root, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2)
+
+    var minX = 0
+    var minY = 0
+    var maxX = 0
+    var maxY = 0
+    for (i = 0; i < order.length; i++) {
+      var it = order[i]
+      it.w = W0 * Math.pow(INV, it.depth)
+      it.h = H0 * Math.pow(INV, it.depth)
+      minX = Math.min(minX, it.x - it.w / 2)
+      minY = Math.min(minY, it.y - it.h / 2)
+      maxX = Math.max(maxX, it.x + it.w / 2)
+      maxY = Math.max(maxY, it.y + it.h / 2)
+    }
+
+    var pad = 80
+    var visible = new Set()
+    for (i = 0; i < order.length; i++) visible.add(order[i].id)
+    return {
+      root: root,
+      byId: byId,
+      order: order,
+      visible: visible,
+      bounds: { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 },
+      maxDepth: counts.length - 1,
+    }
+  }
+
+  function fitFor(layout, focusId, vw, vh, wide) {
+    var node = layout.byId.get(focusId) || layout.root
+    var minX = node.x - node.w / 2
+    var maxX = node.x + node.w / 2
+    var minY = node.y - node.h / 2
+    var maxY = node.y + node.h / 2
+    for (var i = 0; i < node.children.length; i++) {
+      var child = node.children[i]
+      minX = Math.min(minX, child.x - child.w / 2)
+      maxX = Math.max(maxX, child.x + child.w / 2)
+      minY = Math.min(minY, child.y - child.h / 2)
+      maxY = Math.max(maxY, child.y + child.h / 2)
+      /* 孙辈也算进来：焦点层之外还看得见一层（wide 模式，用于生成中） */
+      if (wide === true) for (var j = 0; j < child.children.length; j++) {
+        var grand = child.children[j]
+        minX = Math.min(minX, grand.x - grand.w / 2)
+        maxX = Math.max(maxX, grand.x + grand.w / 2)
+        minY = Math.min(minY, grand.y - grand.h / 2)
+        maxY = Math.max(maxY, grand.y + grand.h / 2)
+      }
+    }
+    var boxW = Math.max(maxX - minX, node.w * 2.4)
+    var boxH = Math.max(maxY - minY, node.h * 2.4)
+    /* 上限：焦点卡在屏幕上不超过 260px 宽，否则一个孤零零的子图会被吹成满屏 */
+    var cap = 260 / Math.max(1, node.w)
+    var k = Math.min(clamp(Math.min(vw / (boxW * 1.2), vh / (boxH * 1.2)), 0.16, 8), cap)
+    return { cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, k: k }
+  }
+
+  /* 公式渲染：$..$ / $$..$$ / \(..\) / \[..\] 交给 KaTeX；
+     「形式化」字段整段都是 LaTeX，没写定界符时按整段渲染。
+     两个壳共用这一份，只是把 katex 实例从外面递进来。 */
+  var HTML_ESCAPE = { '&': '&amp;', '<': '&lt;', '>': '&gt;' }
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>]/g, function (c) {
+      return HTML_ESCAPE[c]
+    })
+  }
+
+  function createMathRenderer(katex) {
+    if (!katex || typeof katex.renderToString !== 'function') return null
+    var opts = { throwOnError: false, strict: false, output: 'html' }
+    return function (text, wholeAsMath) {
+      var src = String(text == null ? '' : text)
+      var re = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$|\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]/g
+      var hasMath = re.test(src)
+      re.lastIndex = 0
+      if (!hasMath) {
+        if (!wholeAsMath) return null
+        try {
+          return katex.renderToString(src, Object.assign({ displayMode: false }, opts))
+        } catch (err) {
+          return null
+        }
+      }
+      var out = ''
+      var last = 0
+      var match
+      while ((match = re.exec(src))) {
+        out += escapeHtml(src.slice(last, match.index))
+        var tex = match[1] || match[2] || match[3] || match[4]
+        var display = Boolean(match[1] || match[4])
+        try {
+          out += katex.renderToString(tex, Object.assign({ displayMode: display }, opts))
+        } catch (err) {
+          out += escapeHtml(match[0])
+        }
+        last = match.index + match[0].length
+      }
+      out += escapeHtml(src.slice(last))
+      return out
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* styles                                                            */
+  /* ---------------------------------------------------------------- */
+
+  var CSS = [
+    '.sn-root{position:relative;display:flex;flex-direction:column;width:100%;height:100%;min-height:0;overflow:hidden;',
+    'background:var(--dsw-alias-bg-base,#f4efe3);color:var(--dsw-alias-label-primary,#2f2a24);',
+    "font-family:'KaiTi','STKaiti','Kaiti SC','Songti SC',serif;}",
+    '.sn-topbar{position:relative;z-index:6;display:flex;align-items:center;gap:10px;flex:none;height:42px;padding:0 12px;',
+    'border-bottom:1px solid var(--dsw-alias-border-l1,rgba(90,75,55,.18));',
+    'background:var(--dsw-alias-bg-layer-1,rgba(255,253,246,.9));}',
+    '.sn-crumbs{display:flex;align-items:center;gap:2px;min-width:0;overflow:hidden;flex:1;}',
+    '.sn-leading{display:flex;align-items:center;gap:6px;flex:none;max-width:40%;}',
+    '.sn-libsel{font:inherit;font-size:12.5px;max-width:180px;padding:3px 6px;border-radius:6px;',
+    'border:1px solid rgba(120,100,70,.28);background:transparent;color:inherit;cursor:pointer;}',
+    '.sn-libsel:focus{outline:none;border-color:rgba(120,88,52,.6);}',
+    '.sn-libsel option{background:var(--dsw-alias-bg-layer-2,#fbf7ec);color:var(--dsw-alias-label-primary,#2f2a24);}',
+    '.sn-crumb{font:inherit;font-size:13px;line-height:1;padding:5px 7px;border-radius:6px;border:0;background:transparent;',
+    'color:var(--dsw-alias-label-secondary,#7a6a56);cursor:pointer;white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;}',
+    '.sn-crumb:hover{background:rgba(120,100,70,.1);color:var(--dsw-alias-label-primary,#2f2a24);}',
+    '.sn-crumb[data-on="1"]{color:var(--dsw-alias-label-primary,#2f2a24);font-weight:700;}',
+    '.sn-sep{color:var(--dsw-alias-label-tertiary,#a2957f);font-size:11px;flex:none;}',
+    '.sn-status{font-size:11px;color:var(--dsw-alias-label-tertiary,#a2957f);white-space:nowrap;flex:none;}',
+    '.sn-iconbtn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;',
+    'border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary,#7a6a56);cursor:pointer;flex:none;}',
+    '.sn-iconbtn:hover{background:rgba(120,100,70,.12);color:var(--dsw-alias-label-primary,#2f2a24);}',
+    '.sn-body{position:relative;display:flex;flex:1;min-height:0;}',
+    '.sn-canvas{position:relative;flex:1;min-width:0;overflow:hidden;cursor:grab;touch-action:none;',
+    'background-image:radial-gradient(circle at 1px 1px, rgba(120,100,70,.16) 1px, transparent 0);background-size:26px 26px;}',
+    '.sn-canvas[data-dragging="1"]{cursor:grabbing;}',
+    '.sn-canvas:before{content:"";position:absolute;inset:0;pointer-events:none;',
+    'background:radial-gradient(120% 90% at 50% 45%, transparent 42%, rgba(96,78,52,.10) 100%);}',
+    '.sn-scene{position:absolute;left:0;top:0;transform-origin:0 0;}',
+    '.sn-scene[data-moving="1"]{will-change:transform;}',
+    '.sn-edges{position:absolute;left:0;top:0;overflow:visible;pointer-events:none;}',
+    '.sn-card{position:absolute;box-sizing:border-box;cursor:pointer;display:flex;flex-direction:column;justify-content:center;gap:2px;overflow:hidden;',
+    'background:#fffdf6;color:#2f2a24;border:1px solid rgba(86,68,45,.24);',
+    'box-shadow:0 1px 0 rgba(255,255,255,.7) inset, 0 2px 6px rgba(70,55,35,.10);',
+    'transition:box-shadow .16s ease, background-color .16s ease, border-color .16s ease;}',
+    '.sn-card:hover{border-color:rgba(86,68,45,.42);box-shadow:0 3px 12px rgba(70,55,35,.18);}',
+    '.sn-card[data-sel="1"]{border-color:#9a6b3f;box-shadow:0 0 0 2px rgba(154,107,63,.24), 0 4px 14px rgba(70,55,35,.18);}',
+    '.sn-card[data-focus="1"]{background:#fffaf0;border-color:rgba(120,88,52,.5);}',
+    '.sn-card[data-dim="1"]{opacity:.55;}',
+    '.sn-card[data-dot="1"]{border-radius:50%;background:#bfad90;border-color:rgba(86,68,45,.28);}',
+    ".sn-title{font-family:'KaiTi','STKaiti','Songti SC',serif;font-weight:700;line-height:1.15;padding:0 .14em;",
+    'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+    '.sn-title[data-wrap="1"]{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;',
+    '-webkit-line-clamp:2;text-align:center;}',
+    '.sn-en{font-family:ui-serif,Georgia,serif;font-style:italic;opacity:.5;line-height:1.1;padding:0 .2em;',
+    'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:.02em;}',
+    '.sn-summary{opacity:.68;line-height:1.25;padding:0 .18em;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;}',
+    '.sn-def{margin-top:.35em;opacity:.74;line-height:1.34;padding:0 .18em;display:-webkit-box;-webkit-box-orient:vertical;',
+    '-webkit-line-clamp:4;overflow:hidden;}',
+    '.sn-sidebar{position:relative;z-index:5;display:flex;flex-direction:column;flex:none;width:380px;min-width:0;',
+    'border-left:1px solid var(--dsw-alias-border-l1,rgba(90,75,55,.18));background:var(--dsw-alias-bg-layer-1,#fbf7ec);overflow:hidden;}',
+    '.sn-sidebar[data-collapsed="1"]{width:0;border-left:0;}',
+    '.sn-side{display:flex;flex-direction:column;min-height:0;height:100%;overflow-y:auto;padding:16px 16px 40px;}',
+    '.sn-side-head{display:flex;align-items:flex-start;gap:8px;}',
+    '.sn-side-title{font-size:21px;font-weight:700;line-height:1.25;flex:1;min-width:0;}',
+    '.sn-side-en{font-size:12px;font-style:italic;opacity:.55;margin-top:2px;}',
+    '.sn-field{margin-top:14px;}',
+    '.sn-label{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,#a2957f);',
+    'margin-bottom:4px;display:flex;align-items:center;gap:6px;}',
+    '.sn-label:after{content:"";flex:1;height:1px;background:rgba(120,100,70,.16);}',
+    '.sn-text{font-size:13.5px;line-height:1.72;white-space:pre-wrap;word-break:break-word;}',
+    '.sn-math{font-family:ui-serif,Georgia,"Times New Roman",serif;font-size:14px;line-height:1.7;',
+    'background:rgba(120,100,70,.07);border-radius:6px;padding:6px 9px;white-space:pre-wrap;word-break:break-word;}',
+    '.sn-rel{display:flex;flex-wrap:wrap;gap:5px;}',
+    '.sn-chip{display:inline-flex;align-items:center;gap:4px;font:inherit;font-size:12px;line-height:1;padding:4px 8px;',
+    'border-radius:999px;cursor:pointer;border:1px solid rgba(120,100,70,.26);background:#fffdf6;color:#4a4034;',
+    'max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+    '.sn-chip:hover{border-color:rgba(120,88,52,.55);}',
+    '.sn-chip[data-t="prereq"]{border-color:rgba(178,120,32,.45);color:#8a5a10;background:rgba(214,163,74,.12);}',
+    '.sn-chip[data-t="related"]{border-color:rgba(32,138,120,.4);color:#10695b;background:rgba(52,168,148,.12);}',
+    '.sn-chip[data-t="contrast"]{border-color:rgba(180,60,96,.4);color:#8c2145;background:rgba(200,70,110,.10);}',
+    '.sn-mut{font-size:11.5px;color:var(--dsw-alias-label-tertiary,#a2957f);}',
+    '.sn-note{width:100%;box-sizing:border-box;min-height:76px;resize:vertical;font:inherit;font-size:13px;line-height:1.6;',
+    'padding:8px 9px;border-radius:8px;border:1px dashed rgba(120,100,70,.34);background:rgba(255,253,246,.75);color:inherit;}',
+    '.sn-note:focus{outline:none;border-color:rgba(120,88,52,.6);background:#fffdf6;}',
+    '.sn-mastery{display:flex;gap:6px;}',
+    '.sn-mbtn{flex:1;font:inherit;font-size:12px;padding:6px 0;border-radius:7px;cursor:pointer;',
+    'border:1px solid rgba(120,100,70,.24);background:transparent;color:var(--dsw-alias-label-secondary,#7a6a56);}',
+    '.sn-mbtn[data-on="1"]{background:rgba(120,88,52,.14);border-color:rgba(120,88,52,.5);color:#3a2f22;font-weight:700;}',
+    '.sn-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;height:100%;',
+    'color:var(--dsw-alias-label-tertiary,#a2957f);font-size:13px;}',
+    '.sn-mini{position:absolute;right:12px;bottom:12px;z-index:4;width:168px;height:116px;border-radius:8px;',
+    'background:rgba(255,253,246,.86);border:1px solid rgba(120,100,70,.24);box-shadow:0 2px 10px rgba(70,55,35,.12);overflow:hidden;pointer-events:none;}',
+    '.sn-legend{position:absolute;left:12px;bottom:12px;z-index:4;display:flex;flex-direction:column;gap:3px;',
+    'font-size:11px;color:var(--dsw-alias-label-tertiary,#a2957f);pointer-events:none;}',
+    '.sn-legend i{display:inline-block;width:16px;height:0;margin-right:6px;vertical-align:middle;}',
+    '.sn-hint{position:absolute;left:12px;top:10px;z-index:4;font-size:11px;color:var(--dsw-alias-label-tertiary,#a2957f);',
+    'background:rgba(255,253,246,.7);padding:3px 8px;border-radius:999px;pointer-events:none;}',
+    '.sn-src{margin-top:8px;border-left:2px solid rgba(154,107,63,.45);padding-left:9px;font-size:12.5px;line-height:1.65;opacity:.82;}',
+    '.sn-src-meta{font-size:11px;letter-spacing:.06em;opacity:.7;margin-bottom:3px;}',
+    '.sn-live{position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:5;font-size:12px;',
+    'background:rgba(255,253,246,.92);border:1px solid rgba(120,100,70,.24);border-radius:999px;padding:5px 12px;pointer-events:none;}',
+    /* dark */
+    'body[data-ds-dark-theme] .sn-root,.sn-root[data-theme="dark"]{background:#1c1a17;color:#e8e1d4;}',
+    'body[data-ds-dark-theme] .sn-topbar,.sn-root[data-theme="dark"] .sn-topbar{background:rgba(28,26,23,.92);border-color:rgba(200,180,150,.16);}',
+    'body[data-ds-dark-theme] .sn-canvas,.sn-root[data-theme="dark"] .sn-canvas{background-image:radial-gradient(circle at 1px 1px, rgba(210,190,160,.14) 1px, transparent 0);}',
+    'body[data-ds-dark-theme] .sn-card,.sn-root[data-theme="dark"] .sn-card{background:#2a2621;color:#efe7d8;border-color:rgba(210,190,160,.22);box-shadow:0 2px 8px rgba(0,0,0,.35);}',
+    'body[data-ds-dark-theme] .sn-card[data-focus="1"],.sn-root[data-theme="dark"] .sn-card[data-focus="1"]{background:#332d26;border-color:rgba(210,175,120,.5);}',
+    'body[data-ds-dark-theme] .sn-card[data-dot="1"],.sn-root[data-theme="dark"] .sn-card[data-dot="1"]{background:#6d6152;}',
+    'body[data-ds-dark-theme] .sn-sidebar,.sn-root[data-theme="dark"] .sn-sidebar{background:#201d19;border-color:rgba(200,180,150,.16);}',
+    'body[data-ds-dark-theme] .sn-chip,.sn-root[data-theme="dark"] .sn-chip{background:#2a2621;color:#ddd3c2;border-color:rgba(210,190,160,.24);}',
+    'body[data-ds-dark-theme] .sn-note,.sn-root[data-theme="dark"] .sn-note{background:rgba(42,38,33,.8);border-color:rgba(210,190,160,.3);}',
+    'body[data-ds-dark-theme] .sn-mini,.sn-root[data-theme="dark"] .sn-mini{background:rgba(32,29,25,.9);border-color:rgba(200,180,150,.22);}',
+    'body[data-ds-dark-theme] .sn-hint,.sn-root[data-theme="dark"] .sn-hint{background:rgba(32,29,25,.8);}',
+    'body[data-ds-dark-theme] .sn-live,.sn-root[data-theme="dark"] .sn-live{background:rgba(32,29,25,.95);border-color:rgba(200,180,150,.24);}',
+  ].join('')
+
+  /* ---------------------------------------------------------------- */
+  /* small pieces                                                      */
+  /* ---------------------------------------------------------------- */
+
+  function Field(props) {
+    if (!props.text) return null
+    var html = props.render ? props.render(props.text, !!props.mono) : null
+    var cls = props.mono ? 'sn-math' : 'sn-text'
+    return h(
+      'div',
+      { className: 'sn-field' },
+      h('div', { className: 'sn-label' }, props.label),
+      html
+        ? h('div', { className: cls, dangerouslySetInnerHTML: { __html: html } })
+        : h('div', { className: cls }, props.text),
+    )
+  }
+
+  function pathBetween(a, b) {
+    var dx = b.x - a.x
+    var dy = b.y - a.y
+    var len = Math.sqrt(dx * dx + dy * dy) || 1
+    var nx = -dy / len
+    var ny = dx / len
+    var bow = len * 0.09
+    var mx = (a.x + b.x) / 2 + nx * bow
+    var my = (a.y + b.y) / 2 + ny * bow
+    return 'M ' + a.x.toFixed(1) + ' ' + a.y.toFixed(1) + ' Q ' + mx.toFixed(1) + ' ' + my.toFixed(1) + ' ' + b.x.toFixed(1) + ' ' + b.y.toFixed(1)
+  }
+
+  function relBlock(list, label, prefix) {
+    if (!list.length) return null
+    return h(
+      'div',
+      { className: 'sn-field' },
+      h('div', { className: 'sn-label' }, label),
+      h(
+        'div',
+        { className: 'sn-rel' },
+        list.map(function (item) {
+          var kind = item.edge.type === 'prereq' ? '需先学 ' : item.edge.type === 'contrast' ? '对比 ' : '参见 '
+          return h(
+            'span',
+            { key: item.edge.from + '-' + item.edge.to + '-' + item.dir, className: 'sn-chip', 'data-t': item.edge.type || 'related' },
+            (prefix || '') + kind + item.other.title,
+          )
+        }),
+      ),
+    )
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* MindMap                                                           */
+  /* ---------------------------------------------------------------- */
+
+  function MindMap(props) {
+    var data = props.data
+    var editable = typeof props.onChange === 'function'
+
+    var statusState = useState('ready')
+    var focusState = useState('')
+    var selectedState = useState('')
+    var collapsedState = useState(false)
+    var status = statusState[0]
+    var setStatus = statusState[1]
+    var focusId = focusState[0]
+    var setFocusId = focusState[1]
+    var selectedId = selectedState[0]
+    var setSelectedId = selectedState[1]
+    var collapsed = collapsedState[0]
+    var setCollapsed = collapsedState[1]
+
+    var canvasRef = useRef(null)
+    var sceneRef = useRef(null)
+    var miniRectRef = useRef(null)
+    var camRef = useRef({ x: 0, y: 0, k: 1 })
+    var rafRef = useRef(0)
+    var initDoneRef = useRef(false)
+    var focusIdRef = useRef('')
+    var pendingFitRef = useRef(null)
+    var settleRef = useRef(0)
+    var lodState = useState(0)
+    var lodK = lodState[0]
+    var setLodK = lodState[1]
+    var renderMath = props.renderMath || null
+
+    var layout = useMemo(function () {
+      return data && data.nodes ? buildLayout(data.nodes, focusId || null) : null
+    }, [data, focusId])
+
+    var nodesById = useMemo(function () {
+      var map = new Map()
+      if (data && data.nodes) for (var i = 0; i < data.nodes.length; i++) map.set(data.nodes[i].id, data.nodes[i])
+      return map
+    }, [data])
+
+    focusIdRef.current = focusId
+
+    var applyCamera = useCallback(function () {
+      var cam = camRef.current
+      if (sceneRef.current) {
+        sceneRef.current.style.transform =
+          'translate(' + cam.x.toFixed(2) + 'px,' + cam.y.toFixed(2) + 'px) scale(' + cam.k.toFixed(4) + ')'
+        sceneRef.current.setAttribute('data-moving', '1')
+      }
+      if (settleRef.current) clearTimeout(settleRef.current)
+      settleRef.current = setTimeout(function () {
+        if (sceneRef.current) sceneRef.current.removeAttribute('data-moving')
+        setLodK(camRef.current.k)
+      }, 160)
+      var el = canvasRef.current
+      var rect = miniRectRef.current
+      if (el && rect && layout) {
+        var b = layout.bounds
+        var vw = el.clientWidth || 1
+        var vh = el.clientHeight || 1
+        var left = (0 - cam.x) / cam.k
+        var top = (0 - cam.y) / cam.k
+        var scale = Math.min(168 / b.w, 116 / b.h)
+        var ox = (168 - b.w * scale) / 2
+        var oy = (116 - b.h * scale) / 2
+        rect.setAttribute('x', String(ox + (left - b.x) * scale))
+        rect.setAttribute('y', String(oy + (top - b.y) * scale))
+        rect.setAttribute('width', String(Math.max(4, (vw / cam.k) * scale)))
+        rect.setAttribute('height', String(Math.max(4, (vh / cam.k) * scale)))
+      }
+    }, [layout])
+
+    var animateTo = useCallback(function (target) {
+      var el = canvasRef.current
+      if (!el) return
+      var vw = el.clientWidth || 1
+      var vh = el.clientHeight || 1
+      var from = camRef.current
+      var fromCx = (vw / 2 - from.x) / from.k
+      var fromCy = (vh / 2 - from.y) / from.k
+      var t0 = performance.now()
+      var dur = 420
+      cancelAnimationFrame(rafRef.current)
+      var step = function (now) {
+        var p = Math.min(1, (now - t0) / dur)
+        var e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2
+        var cx = fromCx + (target.cx - fromCx) * e
+        var cy = fromCy + (target.cy - fromCy) * e
+        var k = from.k * Math.pow(target.k / from.k, e)
+        camRef.current = { x: vw / 2 - cx * k, y: vh / 2 - cy * k, k: k }
+        applyCamera()
+        if (p < 1) rafRef.current = requestAnimationFrame(step)
+      }
+      rafRef.current = requestAnimationFrame(step)
+    }, [applyCamera])
+
+    var focusOn = useCallback(function (id, animate, wide) {
+      var el = canvasRef.current
+      if (!el) return
+      var next = id || ''
+      if (next === focusIdRef.current) {
+        if (!layout) return
+        var t = fitFor(layout, next || layout.root.id, el.clientWidth || 1, el.clientHeight || 1)
+        camRef.current = {
+          x: (el.clientWidth || 1) / 2 - t.cx * t.k,
+          y: (el.clientHeight || 1) / 2 - t.cy * t.k,
+          k: t.k,
+        }
+        applyCamera()
+        return
+      }
+      pendingFitRef.current = { animate: animate !== false, wide: wide === true }
+      setFocusId(next)
+    }, [applyCamera, layout])
+
+    /* 换根之后，布局会重算：等新布局落地再对准镜头 */
+    useEffect(function () {
+      var pending = pendingFitRef.current
+      var el = canvasRef.current
+      if (!pending || !el || !layout) return
+      pendingFitRef.current = null
+      var target = fitFor(layout, focusId || layout.root.id, el.clientWidth || 1, el.clientHeight || 1, pending.wide)
+      if (pending.animate) {
+        animateTo(target)
+      } else {
+        camRef.current = {
+          x: (el.clientWidth || 1) / 2 - target.cx * target.k,
+          y: (el.clientHeight || 1) / 2 - target.cy * target.k,
+          k: target.k,
+        }
+        applyCamera()
+      }
+    }, [layout, focusId, animateTo, applyCamera])
+
+    /* data sync: 首次拿到数据时把根设为焦点 */
+    useEffect(function () {
+      if (!layout || initDoneRef.current) return
+      var el = canvasRef.current
+      if (!el || el.clientWidth < 640 || el.clientHeight < 380) return
+      initDoneRef.current = true
+      focusOn(layout.root.id, false, true)
+    }, [layout, focusOn])
+
+    /* 生成中：概念变多时把视野缓缓拉远，让树"从中心长出来" */
+    useEffect(function () {
+      if (props.follow == null || !initDoneRef.current) return
+      var el = canvasRef.current
+      if (!el || !layout) return
+      var target = fitFor(layout, focusId || layout.root.id, el.clientWidth || 1, el.clientHeight || 1, true)
+      animateTo(target)
+    }, [props.follow])
+
+    useEffect(function () {
+      var el = canvasRef.current
+      if (!el) return
+      var observer = new ResizeObserver(function () {
+        if (!initDoneRef.current && el.clientWidth >= 640 && el.clientHeight >= 380 && layout) {
+          initDoneRef.current = true
+          focusOn(layout.root.id, false, true)
+          return
+        }
+        applyCamera()
+      })
+      observer.observe(el)
+      return function () {
+        observer.disconnect()
+      }
+    }, [applyCamera, focusOn, layout])
+
+    /* gestures */
+    useEffect(function () {
+      var el = canvasRef.current
+      if (!el) return
+      var pointers = new Map()
+      var dragging = false
+      var lastX = 0
+      var lastY = 0
+      var pinchDist = 0
+
+      var onWheel = function (event) {
+        event.preventDefault()
+        var rect = el.getBoundingClientRect()
+        var mx = event.clientX - rect.left
+        var my = event.clientY - rect.top
+        var cam = camRef.current
+        var fit = fitFor(layout, focusIdRef.current || (layout && layout.root.id), el.clientWidth || 1, el.clientHeight || 1)
+        var cur = layout ? layout.byId.get(focusIdRef.current || layout.root.id) : null
+        var hasKids = !!(cur && cur.children && cur.children.length)
+        var factor = Math.exp(-event.deltaY * 0.0016)
+        /* 没有更深的层可走时，把缩放钉在设计尺寸附近，避免把一张卡吹成满屏。 */
+        var want = cam.k * factor
+        var ceil = hasKids ? fit.k * 1.8 : fit.k * 1.05
+        var nk = clamp(want, 0.12, ceil)
+        var wx = (mx - cam.x) / cam.k
+        var wy = (my - cam.y) / cam.k
+        camRef.current = { k: nk, x: mx - wx * nk, y: my - wy * nk }
+        /* 「棘轮」：放大到该层 2 倍就走进离光标最近的子分支；缩小到 1/2 就退回上一层。
+           这样不管滚多少格，卡片都停在自己的设计字号上，永远清晰。 */
+        if (layout && hasKids && nk >= ceil - 1e-6) {
+          var px = wx
+          var py = wy
+          var best = cur.children[0]
+          var bestD = Infinity
+          for (var ci = 0; ci < cur.children.length; ci++) {
+            var ch = cur.children[ci]
+            var d = Math.hypot(ch.x - px, ch.y - py)
+            if (d < bestD) {
+              bestD = d
+              best = ch
+            }
+          }
+          focusOn(best.id, true)
+          return
+        }
+        if (layout && want < fit.k * 0.5) {
+          var cur2 = layout.byId.get(focusIdRef.current)
+          if (cur2 && cur2.parent && cur2.parent !== cur2.id) {
+            focusOn(cur2.parent, true)
+            return
+          }
+        }
+        applyCamera()
+      }
+      var onDown = function (event) {
+        if (event.button !== 0) return
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
+        if (pointers.size === 1) {
+          dragging = true
+          lastX = event.clientX
+          lastY = event.clientY
+          el.setAttribute('data-dragging', '1')
+        } else if (pointers.size === 2) {
+          var pts = Array.from(pointers.values())
+          pinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+        }
+      }
+      var onMove = function (event) {
+        if (!pointers.has(event.pointerId)) return
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
+        if (pointers.size === 2) {
+          var pts = Array.from(pointers.values())
+          var dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+          if (pinchDist > 0) {
+            var rect = el.getBoundingClientRect()
+            var mx = (pts[0].x + pts[1].x) / 2 - rect.left
+            var my = (pts[0].y + pts[1].y) / 2 - rect.top
+            var cam = camRef.current
+            var nk = clamp(cam.k * (dist / pinchDist), 0.12, 9)
+            var wx = (mx - cam.x) / cam.k
+            var wy = (my - cam.y) / cam.k
+            camRef.current = { k: nk, x: mx - wx * nk, y: my - wy * nk }
+            applyCamera()
+          }
+          pinchDist = dist
+          return
+        }
+        if (!dragging) return
+        var c = camRef.current
+        camRef.current = { k: c.k, x: c.x + (event.clientX - lastX), y: c.y + (event.clientY - lastY) }
+        lastX = event.clientX
+        lastY = event.clientY
+        applyCamera()
+      }
+      var onUp = function (event) {
+        pointers.delete(event.pointerId)
+        if (pointers.size < 2) pinchDist = 0
+        if (pointers.size === 0) {
+          dragging = false
+          el.removeAttribute('data-dragging')
+        }
+      }
+      el.addEventListener('wheel', onWheel, { passive: false })
+      el.addEventListener('pointerdown', onDown)
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+      window.addEventListener('pointercancel', onUp)
+      return function () {
+        el.removeEventListener('wheel', onWheel)
+        el.removeEventListener('pointerdown', onDown)
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointercancel', onUp)
+        cancelAnimationFrame(rafRef.current)
+      }
+    }, [applyCamera])
+
+    useEffect(function () {
+      var onKey = function (event) {
+        if (event.key === 'Escape' && selectedId) setSelectedId('')
+      }
+      window.addEventListener('keydown', onKey)
+      return function () {
+        window.removeEventListener('keydown', onKey)
+      }
+    }, [selectedId])
+
+    var focusNode = layout && focusId ? layout.byId.get(focusId) : null
+    var selected = selectedId ? nodesById.get(selectedId) : null
+
+    var crumbs = useMemo(function () {
+      var out = []
+      var cur = focusNode
+      while (cur) {
+        out.unshift(cur)
+        cur = cur.parent && layout ? layout.byId.get(cur.parent) : null
+      }
+      return out
+    }, [focusNode, layout])
+
+    var relations = useMemo(function () {
+      var out = []
+      var into = []
+      if (!data || !data.edges) return { out: out, into: into }
+      for (var i = 0; i < data.edges.length; i++) {
+        var edge = data.edges[i]
+        var other = null
+        if (edge.from === selectedId) {
+          other = nodesById.get(edge.to)
+          if (other) out.push({ edge: edge, other: other, dir: 'out' })
+        }
+        if (edge.to === selectedId) {
+          other = nodesById.get(edge.from)
+          if (other) into.push({ edge: edge, other: other, dir: 'in' })
+        }
+      }
+      return { out: out, into: into }
+    }, [data, selectedId, nodesById])
+
+    var updateNode = useCallback(function (id, patch) {
+      if (!editable || !data) return
+      var next = {
+        version: data.version,
+        id: data.id,
+        title: data.title,
+        subtitle: data.subtitle,
+        updated: new Date().toISOString(),
+        nodes: data.nodes.map(function (n) {
+          if (n.id !== id) return n
+          var merged = {}
+          for (var k in n) merged[k] = n[k]
+          for (var j in patch) merged[j] = patch[j]
+          return merged
+        }),
+        edges: data.edges || [],
+      }
+      props.onChange(next)
+    }, [data, editable, props])
+
+    var focusLevel = focusNode ? focusNode.depth : 0
+
+    var cards = []
+    var edges = []
+    if (layout && data) {
+      for (var i = 0; i < layout.order.length; i++) {
+        var node = layout.order[i]
+        var rel = node.depth - focusLevel
+        if (rel > 4) continue
+        /* 细节层级由「屏幕上的大小」决定：放大到哪一步，就看到多少字。 */
+        var screenW = node.w * (lodK || camRef.current.k || 1)
+        if (rel !== 0 && screenW < 34) continue
+        var detail = screenW < 88 ? 3 : screenW < 190 ? 2 : screenW < 340 ? 1 : 0
+        /* 焦点和它的一级子节点永远至少显示标题，别缩成一堆灰点 */
+        if (rel <= 1 && detail === 3) detail = 2
+        var fontSize = node.w * 0.108
+        var style = {
+          left: node.x - node.w / 2,
+          top: node.y - node.h / 2,
+          width: node.w,
+          height: node.h,
+          borderRadius: Math.max(3, node.w * 0.075),
+          borderWidth: Math.max(0.5, node.w * 0.006),
+          padding: node.w * 0.05,
+        }
+        if (detail === 3) {
+          style.width = node.w * 0.34
+          style.height = node.w * 0.34
+          style.left = node.x - node.w * 0.17
+          style.top = node.y - node.w * 0.17
+          style.borderRadius = '50%'
+        } else if (detail === 0) {
+          /* 全卡会带定义段落，允许长高一点，别把最后一行切掉 */
+          style.height = 'auto'
+          style.minHeight = node.h
+          style.maxHeight = node.h * 2.2
+        }
+        var inner = []
+        if (detail <= 2) {
+          inner.push(h('div', { key: 't', className: 'sn-title', 'data-wrap': '1', style: { fontSize: Math.max(7, fontSize) } }, node.title))
+        }
+        if (detail === 0 && node.en) {
+          inner.push(h('div', { key: 'e', className: 'sn-en', style: { fontSize: Math.max(5, fontSize * 0.5) } }, node.en))
+        }
+        if (detail <= 1 && node.summary) {
+          inner.push(
+            h('div', {
+              key: 's',
+              className: 'sn-summary',
+              style: { fontSize: Math.max(6, fontSize * 0.6), WebkitLineClamp: detail === 0 ? 1 : 2 },
+            }, node.summary),
+          )
+        }
+        if (detail === 0 && node.definition) {
+          inner.push(
+            h('div', {
+              key: 'b',
+              className: 'sn-def',
+              style: { fontSize: Math.max(6, fontSize * 0.5) },
+            }, String(node.definition)),
+          )
+        }
+        cards.push(
+          h(
+            'div',
+            {
+              key: node.id,
+              className: 'sn-card',
+              style: style,
+              'data-sel': node.id === selectedId ? '1' : '0',
+              'data-focus': node.id === focusId ? '1' : '0',
+              'data-dim': rel < 0 ? '1' : '0',
+              'data-dot': detail === 3 ? '1' : '0',
+              onClick: function (id) {
+                return function (event) {
+                  event.stopPropagation()
+                  setSelectedId(id)
+                  if (props.onSelect) props.onSelect(id)
+                }
+              }(node.id),
+              onDoubleClick: function (id, hasKids) {
+                return function (event) {
+                  event.stopPropagation()
+                  if (hasKids) focusOn(id, true)
+                }
+              }(node.id, node.children.length > 0),
+              title: node.title,
+            },
+            detail === 3 ? null : inner,
+          ),
+        )
+
+        if (node.parent) {
+          var parentNode = layout.byId.get(node.parent)
+          if (parentNode) {
+            var relDepth = Math.max(node.depth - focusLevel, parentNode.depth - focusLevel)
+            if (relDepth <= 2) {
+              edges.push(
+                h('path', {
+                  key: 'e-' + node.id,
+                  d: pathBetween(parentNode, node),
+                  fill: 'none',
+                  stroke: 'rgba(96,74,46,.45)',
+                  strokeWidth: 1.5,
+                  strokeLinecap: 'round',
+                }),
+              )
+              edges.push(
+                h('path', {
+                  key: 'e2-' + node.id,
+                  d: pathBetween(parentNode, node),
+                  fill: 'none',
+                  stroke: 'rgba(96,74,46,.16)',
+                  strokeWidth: 3.6,
+                  strokeLinecap: 'round',
+                  transform: 'translate(0.7,0.9)',
+                }),
+              )
+            }
+          }
+        }
+      }
+
+      if (data.edges) {
+        for (var j = 0; j < data.edges.length; j++) {
+          var edge = data.edges[j]
+          var a = layout.byId.get(edge.from)
+          var b = layout.byId.get(edge.to)
+          if (!a || !b) continue
+          if (a.depth - focusLevel > 2 || b.depth - focusLevel > 2) continue
+          var active = edge.from === selectedId || edge.to === selectedId
+          var color = edge.type === 'prereq' ? 'rgba(190,128,35,' : edge.type === 'contrast' ? 'rgba(186,64,104,' : 'rgba(32,150,130,'
+          edges.push(
+            h('path', {
+              key: 'r-' + edge.from + '-' + edge.to,
+              d: pathBetween(a, b),
+              fill: 'none',
+              stroke: color + (active ? '0.85)' : '0.28)'),
+              strokeWidth: active ? 2.2 : 1.4,
+              strokeDasharray: edge.type === 'contrast' ? '7 4' : '5 4',
+              strokeLinecap: 'round',
+            }),
+          )
+        }
+      }
+    }
+
+    var dots = []
+    if (layout) {
+      var b = layout.bounds
+      var scale = Math.min(168 / b.w, 116 / b.h)
+      var ox = (168 - b.w * scale) / 2
+      var oy = (116 - b.h * scale) / 2
+      for (var k = 0; k < layout.order.length; k++) {
+        var n2 = layout.order[k]
+        dots.push(
+          h('circle', {
+            key: n2.id,
+            cx: ox + (n2.x - b.x) * scale,
+            cy: oy + (n2.y - b.y) * scale,
+            r: n2.depth === 0 ? 2.4 : Math.max(1, 2.4 - n2.depth * 0.35),
+            fill: n2.id === selectedId ? '#8a5a10' : 'rgba(90,72,48,.55)',
+          }),
+        )
+      }
+    }
+
+    var sideContent
+    if (selected) {
+      var blocks = []
+      blocks.push(h('div', { key: 'h', className: 'sn-side-head' }, h('div', { className: 'sn-side-title' }, selected.title)))
+      if (selected.en) blocks.push(h('div', { key: 'en', className: 'sn-side-en' }, selected.en))
+      blocks.push(h(Field, { key: 'd', label: '定义', text: selected.definition, render: renderMath }))
+      blocks.push(h(Field, { key: 'f', label: '形式化', text: selected.formal, mono: true, render: renderMath }))
+      blocks.push(h(Field, { key: 'i', label: '直觉', text: selected.intuition, render: renderMath }))
+      blocks.push(h(Field, { key: 'e', label: '例子', text: selected.examples, render: renderMath }))
+      blocks.push(h(Field, { key: 'p', label: '易错点', text: selected.pitfalls, render: renderMath }))
+      if (selected.source && (selected.source.snippet || selected.source.page)) {
+        blocks.push(
+          h(
+            'div',
+            { key: 'src', className: 'sn-field' },
+            h('div', { className: 'sn-label' }, '原文出处'),
+            h(
+              'div',
+              { className: 'sn-src' },
+              selected.source.page ? h('div', { className: 'sn-src-meta' }, '第 ' + selected.source.page + ' 页') : null,
+              selected.source.snippet || '',
+            ),
+          ),
+        )
+      }
+      var inBlock = relBlock(relations.into, '前置 · 引用它的')
+      var outBlock = relBlock(relations.out, '引出 · 它指向的')
+      if (inBlock) blocks.push(React.cloneElement(inBlock, { key: 'in' }))
+      if (outBlock) blocks.push(React.cloneElement(outBlock, { key: 'out' }))
+      if (editable) {
+        blocks.push(
+          h(
+            'div',
+            { key: 'm', className: 'sn-field' },
+            h('div', { className: 'sn-label' }, '掌握度'),
+            h(
+              'div',
+              { className: 'sn-mastery' },
+              ['未读', '模糊', '掌握'].map(function (label, index) {
+                return h(
+                  'button',
+                  {
+                    key: label,
+                    className: 'sn-mbtn',
+                    'data-on': (selected.mastery || 0) === index ? '1' : '0',
+                    onClick: function () {
+                      updateNode(selected.id, { mastery: index })
+                    },
+                  },
+                  label,
+                )
+              }),
+            ),
+          ),
+        )
+        blocks.push(
+          h(
+            'div',
+            { key: 'n', className: 'sn-field' },
+            h('div', { className: 'sn-label' }, '我的笔记'),
+            h('textarea', {
+              className: 'sn-note',
+              value: selected.note || '',
+              placeholder: '写点什么…',
+              onChange: function (event) {
+                updateNode(selected.id, { note: event.target.value })
+              },
+            }),
+          ),
+        )
+      }
+      blocks.push(
+        h(
+          'div',
+          { key: 'acts', className: 'sn-rel', style: { marginTop: 14 } },
+          h(
+            'button',
+            { className: 'sn-chip', onClick: function () { focusOn(selected.id, true) } },
+            '以它为主根展开',
+          ),
+        ),
+      )
+      sideContent = h(React.Fragment, null, blocks)
+    } else if (focusNode) {
+      sideContent = h(
+        React.Fragment,
+        null,
+        h('div', { className: 'sn-side-head' }, h('div', { className: 'sn-side-title' }, focusNode.title)),
+        focusNode.en ? h('div', { className: 'sn-side-en' }, focusNode.en) : null,
+        h('div', { className: 'sn-mut', style: { marginTop: 10, lineHeight: 1.7 } }, focusNode.summary || '点一个概念看详情。'),
+        h('div', { className: 'sn-mut', style: { marginTop: 14 } }, '子分支 ' + focusNode.children.length + ' 个'),
+      )
+    } else {
+      sideContent = h('div', { className: 'sn-mut' }, '点一个概念看详情。')
+    }
+
+    if (!layout) {
+      return h('div', { className: 'sn-root', 'data-theme': props.theme }, h('style', null, CSS), h('div', { className: 'sn-empty' }, props.emptyText || '还没有内容'))
+    }
+
+    return h(
+      'div',
+      { className: 'sn-root', 'data-theme': props.theme },
+      h('style', null, CSS),
+      h(
+        'div',
+        { className: 'sn-topbar' },
+        props.leading ? h('div', { className: 'sn-leading' }, props.leading) : null,
+        h(
+          'div',
+          { className: 'sn-crumbs' },
+          crumbs.map(function (node, index) {
+            return h(
+              React.Fragment,
+              { key: node.id },
+              index > 0 ? h('span', { className: 'sn-sep' }, '›') : null,
+              h(
+                'button',
+                {
+                  className: 'sn-crumb',
+                  'data-on': node.id === focusId ? '1' : '0',
+                  onClick: function () {
+                    focusOn(node.id, true)
+                  },
+                  title: node.title,
+                },
+                node.title,
+              ),
+            )
+          }),
+        ),
+        props.statusText ? h('span', { className: 'sn-status' }, props.statusText) : null,
+        h(
+          'button',
+          {
+            className: 'sn-iconbtn',
+            onClick: function () {
+              setCollapsed(!collapsed)
+            },
+            title: collapsed ? '展开详情' : '收起详情',
+          },
+          collapsed ? '‹' : '›',
+        ),
+      ),
+      h(
+        'div',
+        { className: 'sn-body' },
+        h(
+          'div',
+          {
+            className: 'sn-canvas',
+            ref: canvasRef,
+            onClick: function () {
+              setSelectedId('')
+            },
+          },
+          h('div', { className: 'sn-hint' }, '滚轮缩放 · 拖拽平移 · 双击进入子层'),
+          props.liveText ? h('div', { className: 'sn-live' }, props.liveText) : null,
+          h(
+            'div',
+            { className: 'sn-scene', ref: sceneRef },
+            h(
+              'svg',
+              {
+                className: 'sn-edges',
+                width: layout.bounds.w,
+                height: layout.bounds.h,
+                viewBox: layout.bounds.x + ' ' + layout.bounds.y + ' ' + layout.bounds.w + ' ' + layout.bounds.h,
+                style: { left: layout.bounds.x, top: layout.bounds.y },
+              },
+              edges,
+            ),
+            cards,
+          ),
+          h(
+            'div',
+            { className: 'sn-legend' },
+            h('div', null, h('i', { style: { borderTop: '1px solid rgba(96,74,46,.6)' } }), '从属'),
+            h('div', null, h('i', { style: { borderTop: '1.5px dashed rgba(190,128,35,.8)' } }), '前置'),
+            h('div', null, h('i', { style: { borderTop: '1.5px dotted rgba(32,150,130,.8)' } }), '关联'),
+          ),
+          h(
+            'svg',
+            { className: 'sn-mini', viewBox: '0 0 168 116' },
+            dots,
+            h('rect', {
+              ref: miniRectRef,
+              x: 0,
+              y: 0,
+              width: 10,
+              height: 10,
+              fill: 'rgba(154,107,63,.10)',
+              stroke: 'rgba(154,107,63,.55)',
+              strokeWidth: 1,
+              rx: 2,
+            }),
+          ),
+        ),
+        h('aside', { className: 'sn-sidebar', 'data-collapsed': collapsed ? '1' : '0' }, collapsed ? null : h('div', { className: 'sn-side' }, sideContent)),
+      ),
+    )
+  }
+
+  return { MindMap: MindMap, buildLayout: buildLayout, fitFor: fitFor, createMathRenderer: createMathRenderer }
+}
+
+
+    const comp = createMindMap(React)
+
+/* 运行在 __ModuleLoader__ 工厂作用域内：React / h / comp 已就绪 */
+const MindMap = comp.MindMap
+const hh = h
+
+/* KaTeX 由插件自己的 Host 路由喂进来（宿主模块表里没有它），脚本到位后置位 */
+function useKatexReady() {
+  const [ready, setReady] = React.useState(() => !!window.katex)
+  React.useEffect(() => {
+    if (ready) return undefined
+    const on = () => setReady(!!window.katex)
+    window.addEventListener('synapsis:katex', on)
+    const timer = setTimeout(() => setReady(!!window.katex), 1500)
+    return () => {
+      window.removeEventListener('synapsis:katex', on)
+      clearTimeout(timer)
+    }
+  }, [ready])
+  return ready
+}
+
+async function jget(url) {
+  const res = await fetch(url, { headers: { accept: 'application/json' } })
+  const text = await res.text()
+  let parsed = null
+  try {
+    parsed = JSON.parse(text)
+  } catch {}
+  if (!res.ok) throw new Error((parsed && parsed.error) || 'HTTP ' + res.status)
+  return parsed
+}
+
+function Panel() {
+  const [files, setFiles] = React.useState([])
+  const [name, setName] = React.useState('')
+  const [doc, setDoc] = React.useState(null)
+  const [status, setStatus] = React.useState('读取图库…')
+  const [error, setError] = React.useState('')
+  const katexReady = useKatexReady()
+  const renderMath = React.useMemo(
+    () => (katexReady && window.katex ? comp.createMathRenderer(window.katex) : null),
+    [katexReady],
+  )
+  const nameRef = React.useRef('')
+  const timerRef = React.useRef(0)
+  const docRef = React.useRef(null)
+
+  nameRef.current = name
+  docRef.current = doc
+
+  const openNamed = React.useCallback(async (pick) => {
+    setStatus('读取中…')
+    setError('')
+    try {
+      const list = await jget('/synapsis-api/list')
+      const items = (list && list.items) || []
+      setFiles(items)
+      const next = pick || nameRef.current || (items[0] && items[0].name) || ''
+      if (next && items.some((item) => item.name === next)) {
+        const loaded = await jget('/synapsis-api/load?name=' + encodeURIComponent(next))
+        setName(next)
+        setDoc(loaded)
+      } else {
+        setName('')
+        setDoc(null)
+      }
+      setStatus('')
+    } catch (err) {
+      setError(err && err.message ? err.message : String(err))
+      setStatus('')
+    }
+  }, [])
+
+  React.useEffect(() => {
+    openNamed('')
+  }, [openNamed])
+
+  React.useEffect(() => {
+    const onFocus = () => {
+      if (!docRef.current) return
+      jget('/synapsis-api/list').then((list) => {
+        if (list && list.items) setFiles(list.items)
+      }).catch(() => {})
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
+
+  const save = React.useCallback(async () => {
+    const current = docRef.current
+    const target = nameRef.current
+    if (!current || !target) return
+    try {
+      await fetch('/synapsis-api/save', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: target, data: current }),
+      })
+      setStatus('已保存')
+    } catch (err) {
+      setStatus('保存失败：' + (err && err.message ? err.message : String(err)))
+    }
+  }, [])
+
+  const onChange = React.useCallback(
+    (next) => {
+      setDoc(next)
+      docRef.current = next
+      setStatus('保存中…')
+      clearTimeout(timerRef.current)
+      timerRef.current = setTimeout(save, 600)
+    },
+    [save],
+  )
+
+  React.useEffect(() => () => clearTimeout(timerRef.current), [])
+
+  if (error) {
+    return hh(
+      'div',
+      { style: { padding: '28px 24px', font: 'inherit', lineHeight: 1.7 } },
+      hh('div', { style: { fontSize: 15, fontWeight: 700, marginBottom: 6 } }, '读不到图库'),
+      hh('div', { style: { opacity: 0.7, fontSize: 13 } }, error),
+      hh(
+        'button',
+        { style: { marginTop: 12, font: 'inherit', fontSize: 13, padding: '6px 12px', cursor: 'pointer' }, onClick: () => openNamed('') },
+        '重试',
+      ),
+    )
+  }
+
+  if (!doc) {
+    return hh(
+      'div',
+      {
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100%',
+          flexDirection: 'column',
+          gap: 10,
+          fontSize: 13.5,
+          opacity: 0.75,
+        },
+      },
+      hh('div', { style: { fontSize: 22, letterSpacing: '0.2em' } }, '析域'),
+      hh('div', null, status || '还没有图。用 Synapsis 网站把讲义生成出来，这里会自动出现。'),
+      hh(
+        'button',
+        { style: { font: 'inherit', fontSize: 12.5, padding: '5px 12px', cursor: 'pointer' }, onClick: () => openNamed('') },
+        '重新读取',
+      ),
+    )
+  }
+
+  const leading = hh(
+    React.Fragment,
+    null,
+    hh(
+      'select',
+      {
+        className: 'sn-libsel',
+        value: name,
+        onChange: (event) => openNamed(event.target.value),
+        title: '切换图',
+      },
+      files.map((file) => hh('option', { key: file.name, value: file.name }, file.title)),
+    ),
+    hh(
+      'button',
+      {
+        className: 'sn-iconbtn',
+        title: '从磁盘重新读取',
+        onClick: () => openNamed(name),
+        style: { width: 22, height: 22, fontSize: 13 },
+      },
+      '↻',
+    ),
+  )
+
+  return hh(MindMap, {
+    data: doc,
+    leading,
+    renderMath,
+    statusText: status,
+    onChange,
+  })
+}
+
+
+    function PanelIcon(props) {
+      const size = (props && props.size) || 20
+      return h('svg', {
+        width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round',
+      },
+        h('circle', { cx: 12, cy: 12, r: 3.2 }),
+        h('circle', { cx: 12, cy: 2.6, r: 1.5, fill: 'currentColor', stroke: 'none' }),
+        h('circle', { cx: 12, cy: 21.4, r: 1.5, fill: 'currentColor', stroke: 'none' }),
+        h('circle', { cx: 2.6, cy: 12, r: 1.5, fill: 'currentColor', stroke: 'none' }),
+        h('circle', { cx: 21.4, cy: 12, r: 1.5, fill: 'currentColor', stroke: 'none' }),
+        h('path', { d: 'M12 5.8v3.2M12 15v3.2M5.8 12h3.2M15 12h3.2' }),
+      )
+    }
+
+    function PanelHost() {
+      return h('div', { style: { width: '100%', height: '100%', display: 'flex', minHeight: 0 } }, h(Panel))
+    }
+
+    return {
+      name: 'synapsis',
+      inject: ['slots'],
+      apply(ctx) {
+        /* 公式资源：插件自带 KaTeX，从自己的路由加载，卸载时一起摘掉 */
+        ctx.effect(() => {
+          const head = document.head
+          const link = document.createElement('link')
+          link.rel = 'stylesheet'
+          link.href = '/synapsis-api/katex/katex.min.css'
+          link.setAttribute('data-synapsis-katex', '1')
+          head.appendChild(link)
+          const announce = () => window.dispatchEvent(new Event('synapsis:katex'))
+          let script = null
+          if (window.katex) {
+            announce()
+          } else {
+            script = document.createElement('script')
+            script.src = '/synapsis-api/katex/katex.min.js'
+            script.async = true
+            script.setAttribute('data-synapsis-katex', '1')
+            script.addEventListener('load', announce)
+            head.appendChild(script)
+          }
+          return () => {
+            link.remove()
+            if (script) script.remove()
+          }
+        })
+        ctx.slots.inject('sidebar.panellist', () =>
+          ctx.slots.register({ name: 'sidebar.panellist', id: 'synapsis', order: 30, label: '析域' }, PanelIcon),
+        )
+        ctx.slots.inject('main', () =>
+          ctx.slots.register({ name: 'main', key: 'synapsis' }, PanelHost),
+        )
+      },
+    }
+  },
+})
