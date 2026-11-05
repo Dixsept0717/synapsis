@@ -591,16 +591,23 @@ function createMindMap(React) {
       setFocusId(next)
     }, [applyCamera, layout])
 
-    /* 跳到某个概念：选中它、把它当作新的主根 */
+    /* 跳到某个概念：选中它；有子节点就以它为主根，没有就停在它的父层，免得跳过去只剩一张孤卡 */
     var goTo = useCallback(
       function (id) {
         setSearchOpen(false)
         setSearchQuery('')
         if (!id) return
         setSelectedId(id)
-        focusOn(id, true)
+        var target = layout ? layout.byId.get(id) : null
+        var kids = target && target.children ? target.children.length : 0
+        if (kids > 0) {
+          focusOn(id, true)
+          return
+        }
+        var parentId = (target && target.parent) || (layout ? layout.root.id : '')
+        focusOn(parentId, true)
       },
-      [focusOn],
+      [focusOn, layout],
     )
 
     /* 换根之后，布局会重算：等新布局落地再对准镜头 */
