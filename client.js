@@ -311,6 +311,23 @@ function createMindMap(React) {
     '.sn-src-meta{font-size:11px;letter-spacing:.06em;opacity:.7;margin-bottom:3px;}',
     '.sn-live{position:absolute;left:50%;top:10px;transform:translateX(-50%);z-index:5;font-size:12px;',
     'background:rgba(255,253,246,.92);border:1px solid rgba(120,100,70,.24);border-radius:999px;padding:5px 12px;pointer-events:none;}',
+    /* 搜索 */
+    '.sn-searchbtn{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 8px;border-radius:6px;flex:none;',
+    'border:1px solid rgba(120,100,70,.24);background:transparent;color:var(--dsw-alias-label-secondary,#7a6a56);font:inherit;font-size:12px;cursor:pointer;}',
+    '.sn-searchbtn:hover{background:rgba(120,100,70,.1);color:var(--dsw-alias-label-primary,#2f2a24);}',
+    '.sn-searchbtn kbd{font:inherit;font-size:10.5px;opacity:.62;}',
+    '.sn-searchwrap{position:absolute;inset:0;z-index:30;display:flex;justify-content:center;align-items:flex-start;',
+    'padding:56px 16px 16px;background:rgba(30,24,18,.22);}',
+    '.sn-search{width:100%;max-width:560px;border-radius:12px;overflow:hidden;',
+    'border:1px solid rgba(120,100,70,.3);background:var(--dsw-alias-bg-layer-2,#fbf7ec);box-shadow:0 12px 40px rgba(60,45,28,.28);}',
+    '.sn-search input{display:block;width:100%;border:0;outline:0;background:transparent;color:inherit;',
+    'font:inherit;font-size:15px;padding:13px 15px;}',
+    '.sn-search-list{max-height:44vh;overflow:auto;border-top:1px solid rgba(120,100,70,.18);}',
+    '.sn-search-row{display:flex;flex-direction:column;gap:1px;padding:8px 15px;cursor:pointer;}',
+    '.sn-search-row[data-on="1"]{background:rgba(154,107,63,.14);}',
+    '.sn-search-t{font-size:13.5px;line-height:1.35;}',
+    '.sn-search-p{font-size:11px;opacity:.58;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+    '.sn-search-empty{padding:13px 15px;font-size:12.5px;opacity:.55;}',
     /* dark */
     'body[data-ds-dark-theme] .sn-root,.sn-root[data-theme="dark"]{background:#1c1a17;color:#e8e1d4;}',
     'body[data-ds-dark-theme] .sn-topbar,.sn-root[data-theme="dark"] .sn-topbar{background:rgba(28,26,23,.92);border-color:rgba(200,180,150,.16);}',
@@ -324,6 +341,9 @@ function createMindMap(React) {
     'body[data-ds-dark-theme] .sn-mini,.sn-root[data-theme="dark"] .sn-mini{background:rgba(32,29,25,.9);border-color:rgba(200,180,150,.22);}',
     'body[data-ds-dark-theme] .sn-hint,.sn-root[data-theme="dark"] .sn-hint{background:rgba(32,29,25,.8);}',
     'body[data-ds-dark-theme] .sn-live,.sn-root[data-theme="dark"] .sn-live{background:rgba(32,29,25,.95);border-color:rgba(200,180,150,.24);}',
+    'body[data-ds-dark-theme] .sn-search,.sn-root[data-theme="dark"] .sn-search{background:#252119;border-color:rgba(200,180,150,.24);}',
+    'body[data-ds-dark-theme] .sn-search-list,.sn-root[data-theme="dark"] .sn-search-list{border-color:rgba(200,180,150,.18);}',
+    'body[data-ds-dark-theme] .sn-search-row[data-on="1"],.sn-root[data-theme="dark"] .sn-search-row[data-on="1"]{background:rgba(201,155,98,.2);}',
   ].join('')
 
   /* ---------------------------------------------------------------- */
@@ -398,6 +418,17 @@ function createMindMap(React) {
     var collapsed = collapsedState[0]
     var setCollapsed = collapsedState[1]
 
+    var searchState = useState(false)
+    var searchQueryState = useState('')
+    var searchCursorState = useState(0)
+    var searchOpen = searchState[0]
+    var setSearchOpen = searchState[1]
+    var searchQuery = searchQueryState[0]
+    var setSearchQuery = searchQueryState[1]
+    var searchCursor = searchCursorState[0]
+    var setSearchCursor = searchCursorState[1]
+    var searchInputRef = useRef(null)
+
     var canvasRef = useRef(null)
     var sceneRef = useRef(null)
     var miniRectRef = useRef(null)
@@ -423,6 +454,69 @@ function createMindMap(React) {
     }, [data])
 
     focusIdRef.current = focusId
+
+    /* 搜索索引：标题、英文名、摘要、五个正文块一起进 haystack，路径用于结果里的上下文 */
+    var searchIndex = useMemo(function () {
+      var out = []
+      if (!data || !data.nodes) return out
+      for (var i = 0; i < data.nodes.length; i++) {
+        var node = data.nodes[i]
+        var path = []
+        var cur = node
+        var guard = 0
+        while (cur && guard++ < 16) {
+          path.unshift(String(cur.title || ''))
+          cur = cur.parent ? nodesById.get(cur.parent) : null
+        }
+        out.push({
+          node: node,
+          title: String(node.title || ''),
+          path: path.join(' › '),
+          hay: [
+            node.title,
+            node.en,
+            node.summary,
+            node.definition,
+            node.formal,
+            node.intuition,
+            node.examples,
+            node.pitfalls,
+            node.note,
+          ]
+            .join(' ')
+            .toLowerCase(),
+        })
+      }
+      return out
+    }, [data, nodesById])
+
+    var results = useMemo(function () {
+      var q = String(searchQuery || '').trim().toLowerCase()
+      if (!q) return []
+      var scored = []
+      for (var i = 0; i < searchIndex.length; i++) {
+        var item = searchIndex[i]
+        var title = item.title.toLowerCase()
+        var score = 0
+        if (title === q) score = 120
+        else if (title.indexOf(q) === 0) score = 100
+        else if (title.indexOf(q) >= 0) score = 70
+        else if (item.hay.indexOf(q) >= 0) score = 30
+        if (score) scored.push({ item: item, score: score, at: i })
+      }
+      scored.sort(function (a, b) {
+        return b.score - a.score || a.at - b.at
+      })
+      var out = []
+      for (var j = 0; j < Math.min(scored.length, 12); j++) out.push(scored[j].item)
+      return out
+    }, [searchQuery, searchIndex])
+
+    var openSearch = useCallback(function () {
+      setSearchQuery('')
+      setSearchCursor(0)
+      setSearchOpen(true)
+    }, [])
 
     var applyCamera = useCallback(function () {
       var cam = camRef.current
@@ -496,6 +590,18 @@ function createMindMap(React) {
       pendingFitRef.current = { animate: animate !== false, wide: wide === true }
       setFocusId(next)
     }, [applyCamera, layout])
+
+    /* 跳到某个概念：选中它、把它当作新的主根 */
+    var goTo = useCallback(
+      function (id) {
+        setSearchOpen(false)
+        setSearchQuery('')
+        if (!id) return
+        setSelectedId(id)
+        focusOn(id, true)
+      },
+      [focusOn],
+    )
 
     /* 换根之后，布局会重算：等新布局落地再对准镜头 */
     useEffect(function () {
@@ -670,13 +776,42 @@ function createMindMap(React) {
 
     useEffect(function () {
       var onKey = function (event) {
-        if (event.key === 'Escape' && selectedId) setSelectedId('')
+        var key = String(event.key || '').toLowerCase()
+        if ((event.metaKey || event.ctrlKey) && key === 'k') {
+          event.preventDefault()
+          setSearchQuery('')
+          setSearchCursor(0)
+          setSearchOpen(true)
+          return
+        }
+        if (event.key === 'Escape') {
+          if (searchOpen) {
+            setSearchOpen(false)
+            return
+          }
+          if (selectedId) setSelectedId('')
+        }
       }
       window.addEventListener('keydown', onKey)
       return function () {
         window.removeEventListener('keydown', onKey)
       }
-    }, [selectedId])
+    }, [selectedId, searchOpen])
+
+    /* 搜索框打开就聚焦；结果变了把光标收回第一行 */
+    useEffect(function () {
+      if (!searchOpen) return
+      var timer = setTimeout(function () {
+        if (searchInputRef.current) searchInputRef.current.focus()
+      }, 0)
+      return function () {
+        clearTimeout(timer)
+      }
+    }, [searchOpen])
+
+    useEffect(function () {
+      setSearchCursor(0)
+    }, [searchQuery])
 
     var focusNode = layout && focusId ? layout.byId.get(focusId) : null
     var selected = selectedId ? nodesById.get(selectedId) : null
@@ -1032,6 +1167,16 @@ function createMindMap(React) {
         h(
           'button',
           {
+            className: 'sn-searchbtn',
+            onClick: openSearch,
+            title: '搜索概念（Ctrl/⌘ + K）',
+          },
+          h('span', null, '搜索'),
+          h('kbd', null, '⌘K'),
+        ),
+        h(
+          'button',
+          {
             className: 'sn-iconbtn',
             onClick: function () {
               setCollapsed(!collapsed)
@@ -1097,6 +1242,78 @@ function createMindMap(React) {
         ),
         h('aside', { className: 'sn-sidebar', 'data-collapsed': collapsed ? '1' : '0' }, collapsed ? null : h('div', { className: 'sn-side' }, sideContent)),
       ),
+      searchOpen
+        ? h(
+            'div',
+            {
+              className: 'sn-searchwrap',
+              onMouseDown: function (event) {
+                if (event.target === event.currentTarget) setSearchOpen(false)
+              },
+            },
+            h(
+              'div',
+              { className: 'sn-search' },
+              h('input', {
+                ref: searchInputRef,
+                value: searchQuery,
+                placeholder: '搜索概念、定义里的词，或一个公式…',
+                spellCheck: false,
+                onChange: function (event) {
+                  setSearchQuery(event.target.value)
+                },
+                onKeyDown: function (event) {
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault()
+                    setSearchCursor(function (c) {
+                      return results.length ? Math.min(c + 1, results.length - 1) : 0
+                    })
+                  } else if (event.key === 'ArrowUp') {
+                    event.preventDefault()
+                    setSearchCursor(function (c) {
+                      return Math.max(c - 1, 0)
+                    })
+                  } else if (event.key === 'Enter') {
+                    event.preventDefault()
+                    var hit = results[searchCursor]
+                    if (hit) goTo(hit.node.id)
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault()
+                    setSearchOpen(false)
+                  }
+                },
+              }),
+              results.length
+                ? h(
+                    'div',
+                    { className: 'sn-search-list' },
+                    results.map(function (item, index) {
+                      return h(
+                        'div',
+                        {
+                          key: item.node.id,
+                          className: 'sn-search-row',
+                          'data-on': index === searchCursor ? '1' : '0',
+                          onMouseEnter: function () {
+                            setSearchCursor(index)
+                          },
+                          onClick: function () {
+                            goTo(item.node.id)
+                          },
+                        },
+                        h('div', { className: 'sn-search-t' }, item.title || '（未命名）'),
+                        h('div', { className: 'sn-search-p' }, item.path),
+                      )
+                    }),
+                  )
+                : h(
+                    'div',
+                    { className: 'sn-search-empty' },
+                    String(searchQuery || '').trim() ? '没有匹配的概念' : '输入概念名、定义里的词，或一个公式',
+                  ),
+            ),
+          )
+        : null,
     )
   }
 
